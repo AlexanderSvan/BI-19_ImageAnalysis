@@ -9,7 +9,6 @@ from skimage.measure import regionprops
 from cellpose import models
 import cv2
 from scipy import ndimage as ndi
-import seaborn as sns
 from skimage import io, img_as_ubyte
 
 mpl.rcParams['image.interpolation'] = 'none'
@@ -216,7 +215,7 @@ for num, i in enumerate(list(images.dict.keys())[6:]):
 
 
 #%% Analysis on generated masks
-import time
+
 src=r'E:\Tiffany GBA CMV\MIPs'
 os.chdir(src)
 images=LoadImages(src+"\SingleChannel")
@@ -234,31 +233,9 @@ for num, i in enumerate(list(images.dict.keys())):
     vessle_analysis2=IdentifyVascularNuclei(g,b, vessle_mask=ves, nuclei_mask=nuc)
     vascular, extra = vessle_analysis2.get_sorted_masks()
     
-    vas=pd.DataFrame(ColocAnalysis(vascular, r).measure(nuclei_stats,print=False)).T
-    ext=pd.DataFrame(ColocAnalysis(extra, r).measure(nuclei_stats,print=False)).T
-    
-    # results[i]['pct_extravascular_cmv']=np.sum(ext['total_area'])/(np.sum(vas['total_area'])+np.sum(ext['total_area']))*100
-    # results[i]['pct_transduced_vas']=len(vas[vas['total_area']>10])/len(vas)*100
-    # results[i]['pct_transduced_extravas']=len(ext[ext['total_area']>10])/len(ext)*100
-    # results[i]['pct_nuclear_cmv']=((np.sum(vas['total_area'])+np.sum(ext['total_area']))/np.count_nonzero(cmv))*100
-    # results[i]['total_cmv_area']=np.count_nonzero(cmv)
-    
     results[i]['pct_extravascular_cmv']=np.count_nonzero(cmv*extra)/(np.count_nonzero(cmv*(vascular+extra)))*100
     results[i]['pct_nuclear_cmv']=(np.count_nonzero(cmv*(binary_dilation(vascular+extra, footprint=diamond(3))))/np.count_nonzero(cmv))*100
     results[i]['total_cmv_area']=np.count_nonzero(cmv)
-    
-    
-    # plt.imshow(cmv*(vascular+extra))
-    
-    # np.count_nonzero(cmv*vascular)
-    # np.count_nonzero(cmv*extra)
-    
-    # ((np.sum(vas['total_area'])+np.sum(ext['total_area']))/np.count_nonzero(cmv))*100
-    # plt.imshow((cmv*np.invert(vascular+extra))[:1000,:1000])
-    # plt.imshow((cmv*(vascular+extra))[:1000,:1000])
-    # plt.imshow((vascular+extra)[:1000,:1000])
-    # plt.imshow(r[:1000,:1000])
-    # plt.imshow(cmv[:1000,:1000])
     
 df=pd.DataFrame(results).T
 
