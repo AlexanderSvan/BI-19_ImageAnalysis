@@ -1,6 +1,6 @@
 AnalysisOutput/
 MIPs/
 raws/
-.cmv
-.prism
-.psd
+*.cmv
+*.prism
+*.psd
