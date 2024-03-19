@@ -134,65 +134,6 @@ class IdentifyVascularNuclei:
         ax3.imshow(cv2.merge((self.vessle_mask.astype(int)*255, (self.nuclei_mask>0).astype(int)*255, np.zeros_like(self.vessle_mask).astype(int))))
         plt.tight_layout()
            
-class ColocAnalysis:
-    
-    def __init__(self, mask, int_img):
-        self.mask=mask
-        self.int_img=int_img
-        
-    def measure(self, schema, print=False):
-        objs=regionprops(ndi.label(binary_dilation(self.mask, footprint=diamond(3)))[0], self.int_img)
-        
-        return {obj.label:schema(obj, print=print).export_to_dict() for obj in objs}
-
-class nuclei_stats:
-    
-    # Takse a regionprops object as input containing a nuclear and intensity mask
-
-    def __init__(self, data: regionprops, print=False):
-        self.data=data
-        self.agg_mask=episome_thr_mask(self.data.image_intensity)
-        self.measure()
-        if print:
-            fig, (ax1,ax2)=plt.subplots(nrows=1, ncols=2)
-            ax1.imshow(self.data.image_intensity)
-            ax2.imshow(self.agg_mask)
-            plt.show()
-        
-    def total_area(self):
-        setattr(self, "total_area", np.count_nonzero(self.agg_mask))
-    
-    def total_int(self):
-        setattr(self, "total_int", np.sum(self.data.image_intensity*self.agg_mask))
-
-    def pct_nuc_area(self):
-        setattr(self, "pct_nuc_area", round((self.total_area/self.data.area_filled)*100,2))
-        
-    def measure(self):
-        self.total_area()
-        self.total_int()
-        self.pct_nuc_area()
-    
-    def export_to_dict(self):
-        return {'total_area': self.total_area,
-                'total_int' : self.total_int,
-                'pct_nuc_area': self.pct_nuc_area}
-        
-# def nuc_mask(img):
-#     nuc_model = models.Cellpose(gpu=False, model_type='nuclei')
-#     nuc_mask, flows, styles, diams = nuc_model.eval([img], diameter=60, channels=[0,0],
-#                                              flow_threshold=0.4, do_3D=False)
-#     return nuc_mask[0]>0
-
-def episome_mask(img):
-    nuc_model = models.Cellpose(gpu=False, model_type='cyto')
-    nuc_mask, flows, styles, diams = nuc_model.eval([img], diameter=10, channels=[0,0],
-                                             flow_threshold=0.5, do_3D=False)
-    return nuc_mask[0]
-
-def episome_thr_mask(img, thr=5750):
-    return ndi.label(img>thr)[0]
-
 #%% Generate all masks
         
 src=r'E:\Tiffany GBA CMV\MIPs'
@@ -214,6 +155,53 @@ for num, i in enumerate(list(images.dict.keys())[6:]):
                      extra)
 
 
+#%% Segmentation of nuclear mask
+
+from skimage.segmentation import watershed
+from skimage.feature import peak_local_max
+import math
+
+class NucleiSegmentation:
+    
+    def __init__(self, nuc_mask):
+        self.ori_nuc=nuc_mask
+        self.objs=regionprops(ndi.label(self.ori_nuc)[0])
+        
+    def SegmentRoundness(self):
+        seg_out=np.zeros_like(self.ori_nuc).astype(int)
+        for obj in self.objs:
+                roundness=(obj.perimeter*obj.perimeter)/(math.pi*4*obj.area)
+                if roundness > 1.4:
+                    segmented=self.WatershedSegmentation(obj)
+                    labels=ndi.label(segmented)[0]
+                    sl=obj.slice
+                    seg_out[sl[0].start:sl[0].stop,sl[1].start:sl[1].stop]+=labels
+                else:
+                    sl=obj.slice
+                    seg_out[sl[0].start:sl[0].stop,sl[1].start:sl[1].stop]+=obj.image_filled
+        return seg_out>0
+
+    def FilterArea(self, thr):
+        self.objs=[obj for obj in self.objs if obj.area>thr]
+    
+    def WatershedSegmentation(self, obj):
+        distance = ndi.distance_transform_edt(obj.image_filled)
+        coords = peak_local_max(distance, footprint=np.ones((20, 20)), labels=obj.image_filled, exclude_border=False, min_distance=15)
+        mask = np.zeros(distance.shape, dtype=bool)
+        mask[tuple(coords.T)] = True
+        markers, _ = ndi.label(mask)
+        labels = watershed(-distance, markers, mask=obj.image_filled, watershed_line=True)
+        return labels
+
+i=list(images.dict.keys())[1]
+b,g,r=images.GetImage(i)
+ves, cmv, nuc = images.LoadMasks(i)
+
+        
+seg=NucleiSegmentation(nuc)
+mask_seg=seg.SegmentRoundness()
+plt.imshow(mask_seg[3000:,3000:])
+
 #%% Analysis on generated masks
 
 src=r'E:\Tiffany GBA CMV\MIPs'
@@ -230,6 +218,7 @@ for num, i in enumerate(list(images.dict.keys())):
 
     b,g,r=images.GetImage(i)
     ves, cmv, nuc = images.LoadMasks(i)
+    nuc=NucleiSegmentation(nuc).SegmentRoundness()
     vessle_analysis2=IdentifyVascularNuclei(g,b, vessle_mask=ves, nuclei_mask=nuc)
     vascular, extra = vessle_analysis2.get_sorted_masks()
     
@@ -243,7 +232,7 @@ df['treatment']=df.index.str.split("_").str[1]
 df['region']=df.index.str.split("_").str[7]
 df['animal']=df.index.str.split("_").str[2]
 
-mean2=df.groupby(['treatment','region','animal']).mean().reset_index()
+mean=df.groupby(['treatment','region','animal']).mean().reset_index()
 
 highdose2=mean[np.isin(mean['treatment'],['HighDose3weeks','WTUninjected'])]
 highdose2.columns=['Treatment','Region','Animal',
