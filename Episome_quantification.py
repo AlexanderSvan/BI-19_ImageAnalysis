@@ -10,6 +10,12 @@ from cellpose import models
 import cv2
 from scipy import ndimage as ndi
 from skimage import io, img_as_ubyte
+from skimage.segmentation import watershed
+from skimage.feature import peak_local_max
+import math
+from skimage.exposure import equalize_adapthist
+from skimage.filters import threshold_local
+from scipy.signal import medfilt
 
 mpl.rcParams['image.interpolation'] = 'none'
 mpl.rcParams['image.cmap']='gray'
@@ -45,15 +51,20 @@ class LoadImages:
         r=io.imread(self.dict[fname]['CMV'])
         return b,g,r
     
-    def SaveMasks(self, fname, lectin_mask, nuclei_mask, cmv_mask, vas, ext):
+    def SaveMasks(self, fname, lectin_mask=None, nuclei_mask=None, cmv_mask=None, vas=None, ext=None):
         mask_src=self.src+"\\"+fname+"\\Masks"
         if not os.path.exists(mask_src): 
             os.makedirs(mask_src) 
-        io.imsave(mask_src+"\\LEL.mask.png", img_as_ubyte(lectin_mask), cmap='gray')
-        io.imsave(mask_src+"\\nuclei.mask.png", img_as_ubyte(nuclei_mask), cmap='gray')
-        io.imsave(mask_src+"\\CMV.mask.png", img_as_ubyte(cmv_mask), cmap='gray')
-        io.imsave(mask_src+"\\vascular_nuclei.mask.png", img_as_ubyte(vas), cmap='gray')
-        io.imsave(mask_src+"\\extra_nuclei.mask.png", img_as_ubyte(ext), cmap='gray')
+        if lectin_mask is not None:
+            io.imsave(mask_src+"\\LEL.mask.png", img_as_ubyte(lectin_mask), cmap='gray')
+        if nuclei_mask is not None:
+            io.imsave(mask_src+"\\nuclei.mask.png", img_as_ubyte(nuclei_mask), cmap='gray')
+        if cmv_mask is not None:
+            io.imsave(mask_src+"\\CMV.mask.png", img_as_ubyte(cmv_mask), cmap='gray')
+        if vas is not None:
+            io.imsave(mask_src+"\\vascular_nuclei.mask.png", img_as_ubyte(vas), cmap='gray')
+        if ext is not None:
+            io.imsave(mask_src+"\\extra_nuclei.mask.png", img_as_ubyte(ext), cmap='gray')
         
     def LoadMasks(self, fname):
         mask_src=self.src+"\\"+fname+"\\Masks"
@@ -134,6 +145,43 @@ class IdentifyVascularNuclei:
         ax3.imshow(cv2.merge((self.vessle_mask.astype(int)*255, (self.nuclei_mask>0).astype(int)*255, np.zeros_like(self.vessle_mask).astype(int))))
         plt.tight_layout()
            
+#%% Segmentation of nuclear mask
+
+class NucleiSegmentation:
+    
+    def __init__(self, nuc_mask):
+        self.ori_nuc=nuc_mask
+        self.objs=regionprops(ndi.label(self.ori_nuc)[0])
+        
+    def SegmentRoundness(self):
+        seg_out=np.zeros_like(self.ori_nuc).astype(int)
+        for obj in self.objs:
+                roundness=(obj.perimeter*obj.perimeter)/(math.pi*4*obj.area)
+                if roundness > 1.4:
+                    segmented=self.WatershedSegmentation(obj)
+                    labels=ndi.label(segmented)[0]
+                    sl=obj.slice
+                    seg_out[sl[0].start:sl[0].stop,sl[1].start:sl[1].stop]+=labels
+                else:
+                    sl=obj.slice
+                    seg_out[sl[0].start:sl[0].stop,sl[1].start:sl[1].stop]+=obj.image_filled
+        return seg_out>0
+    
+    def FilterArea(self, thr, mode='above'):
+        if mode=='above':
+            self.objs=[obj for obj in self.objs if obj.area>thr]
+        elif mode == 'below':
+            self.objs=[obj for obj in self.objs if obj.area<thr]
+    
+    def WatershedSegmentation(self, obj):
+        distance = ndi.distance_transform_edt(obj.image_filled)
+        coords = peak_local_max(distance, footprint=np.ones((20, 20)), labels=obj.image_filled, exclude_border=False, min_distance=15)
+        mask = np.zeros(distance.shape, dtype=bool)
+        mask[tuple(coords.T)] = True
+        markers, _ = ndi.label(mask)
+        labels = watershed(-distance, markers, mask=obj.image_filled, watershed_line=True)
+        return labels
+
 #%% Generate all masks
         
 src=r'E:\Tiffany GBA CMV\MIPs'
@@ -155,52 +203,22 @@ for num, i in enumerate(list(images.dict.keys())[6:]):
                      extra)
 
 
-#%% Segmentation of nuclear mask
-
-from skimage.segmentation import watershed
-from skimage.feature import peak_local_max
-import math
-
-class NucleiSegmentation:
+#%% Segment an save nuc masks
+src=r'E:\Tiffany GBA CMV\MIPs'
+os.chdir(src)
+images=LoadImages(src+"\SingleChannel")
+for num, i in enumerate(list(images.dict.keys())):
     
-    def __init__(self, nuc_mask):
-        self.ori_nuc=nuc_mask
-        self.objs=regionprops(ndi.label(self.ori_nuc)[0])
-        
-    def SegmentRoundness(self):
-        seg_out=np.zeros_like(self.ori_nuc).astype(int)
-        for obj in self.objs:
-                roundness=(obj.perimeter*obj.perimeter)/(math.pi*4*obj.area)
-                if roundness > 1.4:
-                    segmented=self.WatershedSegmentation(obj)
-                    labels=ndi.label(segmented)[0]
-                    sl=obj.slice
-                    seg_out[sl[0].start:sl[0].stop,sl[1].start:sl[1].stop]+=labels
-                else:
-                    sl=obj.slice
-                    seg_out[sl[0].start:sl[0].stop,sl[1].start:sl[1].stop]+=obj.image_filled
-        return seg_out>0
+    print("sample nr: ", num+1)
+    print("processing: ", i)
 
-    def FilterArea(self, thr):
-        self.objs=[obj for obj in self.objs if obj.area>thr]
-    
-    def WatershedSegmentation(self, obj):
-        distance = ndi.distance_transform_edt(obj.image_filled)
-        coords = peak_local_max(distance, footprint=np.ones((20, 20)), labels=obj.image_filled, exclude_border=False, min_distance=15)
-        mask = np.zeros(distance.shape, dtype=bool)
-        mask[tuple(coords.T)] = True
-        markers, _ = ndi.label(mask)
-        labels = watershed(-distance, markers, mask=obj.image_filled, watershed_line=True)
-        return labels
+    b,g,r=images.GetImage(i)
+    ves, cmv, nuc = images.LoadMasks(i)
+    nuc_seg=NucleiSegmentation(nuc).SegmentRoundness()
+    vessle_analysis2=IdentifyVascularNuclei(g,b, vessle_mask=ves, nuclei_mask=nuc_seg)
+    vascular, extra = vessle_analysis2.get_sorted_masks()
+    images.SaveMasks(i, vas=vascular, ext=extra)
 
-i=list(images.dict.keys())[1]
-b,g,r=images.GetImage(i)
-ves, cmv, nuc = images.LoadMasks(i)
-
-        
-seg=NucleiSegmentation(nuc)
-mask_seg=seg.SegmentRoundness()
-plt.imshow(mask_seg[3000:,3000:])
 
 #%% Analysis on generated masks
 
@@ -218,7 +236,6 @@ for num, i in enumerate(list(images.dict.keys())):
 
     b,g,r=images.GetImage(i)
     ves, cmv, nuc = images.LoadMasks(i)
-    nuc=NucleiSegmentation(nuc).SegmentRoundness()
     vessle_analysis2=IdentifyVascularNuclei(g,b, vessle_mask=ves, nuclei_mask=nuc)
     vascular, extra = vessle_analysis2.get_sorted_masks()
     
@@ -239,3 +256,33 @@ highdose2.columns=['Treatment','Region','Animal',
                   '% extravascular CMV signal',
                   '% transduced vascular cells',
                   '% transduced parenchymal cells']
+
+#%%
+
+src=r'E:\Tiffany GBA CMV\MIPs'
+os.chdir(src)
+images=LoadImages(src+"\SingleChannel")
+for num, i in enumerate(list(images.dict.keys())):
+
+   
+    print("sample nr: ", num+1)
+    print("processing: ", i)
+
+    b,g,r=images.GetImage(i)
+    ves, cmv, nuc = images.LoadMasks(i)
+    imax=np.amax(b)
+    test_mask=(b*np.invert(binary_dilation(nuc)))>6000
+    median_img=medfilt(test_mask.astype(int),kernel_size=15)
+    
+    seg_mask=NucleiSegmentation(median_img)
+    seg_mask.FilterArea(500)
+    a=seg_mask.SegmentRoundness()
+    
+    fig, ((ax1,ax2),(ax3,ax4)) = plt.subplots(nrows=2, ncols=2, figsize=(8,8))
+    ax1.imshow(b, vmax=imax)
+    ax2.imshow(a)
+    ax3.imshow(b*np.invert(nuc), vmax=imax)
+    ax4.imshow(b*np.invert(nuc+a), vmax=imax)
+    plt.tight_layout()
+    plt.suptitle(i)
+    plt.show()
