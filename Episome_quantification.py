@@ -13,8 +13,6 @@ from skimage import io, img_as_ubyte
 from skimage.segmentation import watershed
 from skimage.feature import peak_local_max
 import math
-from skimage.exposure import equalize_adapthist
-from skimage.filters import threshold_local
 from scipy.signal import medfilt
 
 mpl.rcParams['image.interpolation'] = 'none'
@@ -157,7 +155,7 @@ class NucleiSegmentation:
         seg_out=np.zeros_like(self.ori_nuc).astype(int)
         for obj in self.objs:
                 roundness=(obj.perimeter*obj.perimeter)/(math.pi*4*obj.area)
-                if roundness > 1.4:
+                if roundness > 1.3:
                     segmented=self.WatershedSegmentation(obj)
                     labels=ndi.label(segmented)[0]
                     sl=obj.slice
@@ -181,44 +179,40 @@ class NucleiSegmentation:
         markers, _ = ndi.label(mask)
         labels = watershed(-distance, markers, mask=obj.image_filled, watershed_line=True)
         return labels
+    
+def IdentifyAdditionalNuc(nuc_int, nuc_mask, thr=6000):
+    remnant_mask=(nuc_int*np.invert(binary_dilation(nuc_mask)))>6000
+    smoothed_remnant=medfilt(remnant_mask.astype(int),kernel_size=15)
+    
+    seg_remnant=NucleiSegmentation(smoothed_remnant)
+    seg_remnant.FilterArea(500)
+    add_nuc=seg_remnant.SegmentRoundness()
+    return nuc_mask+add_nuc
 
 #%% Generate all masks
-        
 src=r'E:\Tiffany GBA CMV\MIPs'
 os.chdir(src)
 images=LoadImages(src+"\SingleChannel")
+len_images=len(list(images.dict.keys()))
 
-for num, i in enumerate(list(images.dict.keys())[6:]):
-    print(num,"/",len(list(images.dict.keys())[6:]))
-    # print("processing: ", i)
+for num, i in enumerate(list(images.dict.keys())):
+    print(num,"/",len_images)
+    
     b,g,r=images.GetImage(i)
         
     vessle_analysis=IdentifyVascularNuclei(g,b)
+    nuc_seg=NucleiSegmentation(vessle_analysis.nuclei_mask).SegmentRoundness()
+    nuc_seg=IdentifyAdditionalNuc(b, nuc_seg)
+    
+    vessle_analysis=IdentifyVascularNuclei(g,b, vessle_mask=vessle_analysis.vessle_mask, nuclei_mask=nuc_seg)
+    
     vascular, extra = vessle_analysis.get_sorted_masks()
     images.SaveMasks(i,
-                     vessle_analysis.vessle_mask, 
-                     vessle_analysis.nuclei_mask, 
-                     r>5750, 
-                     vascular, 
-                     extra)
-
-
-#%% Segment an save nuc masks
-src=r'E:\Tiffany GBA CMV\MIPs'
-os.chdir(src)
-images=LoadImages(src+"\SingleChannel")
-for num, i in enumerate(list(images.dict.keys())):
-    
-    print("sample nr: ", num+1)
-    print("processing: ", i)
-
-    b,g,r=images.GetImage(i)
-    ves, cmv, nuc = images.LoadMasks(i)
-    nuc_seg=NucleiSegmentation(nuc).SegmentRoundness()
-    vessle_analysis2=IdentifyVascularNuclei(g,b, vessle_mask=ves, nuclei_mask=nuc_seg)
-    vascular, extra = vessle_analysis2.get_sorted_masks()
-    images.SaveMasks(i, vas=vascular, ext=extra)
-
+                     lectin_mask=vessle_analysis.vessle_mask, 
+                     nuclei_mask=nuc_seg, 
+                     cmv_mask=r>5750, 
+                     vas=vascular, 
+                     ext=extra)    
 
 #%% Analysis on generated masks
 
@@ -230,59 +224,24 @@ results={}
 
 for num, i in enumerate(list(images.dict.keys())):
     results[i]={}
-   
     print("sample nr: ", num+1)
     print("processing: ", i)
 
     b,g,r=images.GetImage(i)
     ves, cmv, nuc = images.LoadMasks(i)
+    
     vessle_analysis2=IdentifyVascularNuclei(g,b, vessle_mask=ves, nuclei_mask=nuc)
     vascular, extra = vessle_analysis2.get_sorted_masks()
     
     results[i]['pct_extravascular_cmv']=np.count_nonzero(cmv*extra)/(np.count_nonzero(cmv*(vascular+extra)))*100
     results[i]['pct_nuclear_cmv']=(np.count_nonzero(cmv*(binary_dilation(vascular+extra, footprint=diamond(3))))/np.count_nonzero(cmv))*100
     results[i]['total_cmv_area']=np.count_nonzero(cmv)
+    vascular_count=ndi.label(vascular)[1]
+    extra_count=ndi.label(extra)[1]
+    results[i]['pct endothelial cells']=(vascular_count/(vascular_count+extra_count))*100
     
 df=pd.DataFrame(results).T
 
 df['treatment']=df.index.str.split("_").str[1]
 df['region']=df.index.str.split("_").str[7]
 df['animal']=df.index.str.split("_").str[2]
-
-mean=df.groupby(['treatment','region','animal']).mean().reset_index()
-
-highdose2=mean[np.isin(mean['treatment'],['HighDose3weeks','WTUninjected'])]
-highdose2.columns=['Treatment','Region','Animal',
-                  '% extravascular CMV signal',
-                  '% transduced vascular cells',
-                  '% transduced parenchymal cells']
-
-#%%
-
-src=r'E:\Tiffany GBA CMV\MIPs'
-os.chdir(src)
-images=LoadImages(src+"\SingleChannel")
-for num, i in enumerate(list(images.dict.keys())):
-
-   
-    print("sample nr: ", num+1)
-    print("processing: ", i)
-
-    b,g,r=images.GetImage(i)
-    ves, cmv, nuc = images.LoadMasks(i)
-    imax=np.amax(b)
-    test_mask=(b*np.invert(binary_dilation(nuc)))>6000
-    median_img=medfilt(test_mask.astype(int),kernel_size=15)
-    
-    seg_mask=NucleiSegmentation(median_img)
-    seg_mask.FilterArea(500)
-    a=seg_mask.SegmentRoundness()
-    
-    fig, ((ax1,ax2),(ax3,ax4)) = plt.subplots(nrows=2, ncols=2, figsize=(8,8))
-    ax1.imshow(b, vmax=imax)
-    ax2.imshow(a)
-    ax3.imshow(b*np.invert(nuc), vmax=imax)
-    ax4.imshow(b*np.invert(nuc+a), vmax=imax)
-    plt.tight_layout()
-    plt.suptitle(i)
-    plt.show()
